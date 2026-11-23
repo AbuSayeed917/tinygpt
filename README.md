@@ -9,7 +9,7 @@ Supabase for storage.
 |---|---|---|
 | 1 | **Data curation:** normalisation, Gopher-style quality filtering, PII redaction, exact + MinHash/LSH near-dedup, data card | done |
 | 2 | **Tokenizer:** byte-level BPE written from scratch, 8,192 tokens, 3.92 bytes/token on held-out text | done |
-| 3 | **Model:** ~20M-param decoder (RMSNorm, RoPE, SwiGLU, tied embeddings, KV cache) | planned |
+| 3 | **Model:** 17.3M-param decoder (RMSNorm, RoPE, SwiGLU, tied embeddings, KV cache); corpus encoded to 880M tokens | done |
 | 4 | **Pretraining:** Colab T4, mixed precision, warmup + cosine LR, resumable checkpoints | planned |
 | 5 | **Supervised fine-tuning:** chat template, assistant-only loss masking | planned |
 | 6 | **Evaluation:** bits-per-byte, held-out Q&A, red-team suite, model card | planned |
@@ -58,3 +58,21 @@ deletion; a test checks it learns exactly the same merges as textbook BPE. Resul
 [reports/tokenizer-8k.md](reports/tokenizer-8k.md), and the input format is in
 [docs/chat_template.md](docs/chat_template.md). Plain `encode()` can never produce the
 role tokens, so users cannot spoof `<|system|>` or `<|assistant|>`.
+
+## Phase 3: the model
+
+`model/gpt.py`: a Llama-style decoder with RMSNorm, rotary position embeddings, a SwiGLU
+feed-forward, tied embeddings and a preallocated KV cache. The default config has
+17.3M parameters (8 layers, width 384, 6 heads, context 512). Tests check the parameter
+count, causality (future tokens can't change past logits), that KV-cache decoding equals
+a full forward pass, initial loss ≈ ln(vocab), loss masking, and that the model can
+memorise one batch.
+
+```bash
+.venv/bin/python -m bpe.encode_corpus --tokenizer bpe/tinygpt-bpe-8k.json \
+    --input data/clean/fineweb-edu-000.jsonl.gz --output-dir data/tokens
+```
+
+This writes `train.bin` (880.4M tokens) and `val.bin` (4.3M tokens, every 200th document)
+as uint16, ready for memory-mapped training. See
+[reports/tokens-meta.json](reports/tokens-meta.json).

@@ -1,0 +1,17 @@
+{
+  "dtype": "<u2",
+  "vocab_size": 8192,
+  "end_of_text_id": 8187,
+  "validation_every": 200,
+  "tokens": {
+    "train": 880440297,
+    "val": 4278888
+  },
+  "documents": {
+    "train": 715668,
+    "val": 3597
+  },
+  "tokenizer_sha256": "f95c7f8f58db9e1795b7a495054cc9407677c5909999087ac9628f9deabae376",
+  "source": "fineweb-edu-000.jsonl.gz",
+  "seconds": 168.5
+}
