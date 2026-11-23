@@ -23,6 +23,26 @@ def test_leaves_years_ranges_and_short_numbers_alone():
     assert not result.has_redactions
 
 
+def test_leaves_isbns_pubmed_ids_and_page_ranges_alone():
+    # Arrange: false positives seen when sampling FineWeb-Edu
+    text = "ISBN 9780262038270, PMID 24462672, Revue (1968) 359-374, MET 220460258."
+
+    # Act
+    result = redact_pii(text)
+
+    # Assert
+    assert result.text == text
+
+
+def test_redacts_common_phone_shapes():
+    text = "Call 1-800-525-8084, (701) 328-2666 or +60126725888 today."
+
+    result = redact_pii(text)
+
+    assert result.text == "Call 1-[PHONE], [PHONE] or [PHONE] today."
+    assert result.counts["phone"] == 3
+
+
 def test_ip_is_not_mistaken_for_phone():
     result = redact_pii("10.0.0.1")
 

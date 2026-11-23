@@ -24,9 +24,19 @@ Supabase for storage.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements/dev.txt
 .venv/bin/python -m pytest
-.venv/bin/python -m pipeline.clean --input data/raw/shard.jsonl \
-    --output data/clean/shard.jsonl --report data/clean/shard.report.json
+
+.venv/bin/python -m pipeline.download          # pinned, sha256-checked FineWeb-Edu shard
+.venv/bin/python -m pipeline.sample --input data/raw/fineweb-edu-000_00000.parquet \
+    --output data/raw/sample-50k.jsonl --documents 50000
+.venv/bin/python -m pipeline.clean --input data/raw/sample-50k.jsonl \
+    --output data/clean/sample-50k.jsonl --report data/clean/sample-50k.report.json
+.venv/bin/python -m pipeline.analyze --raw data/raw/sample-50k.jsonl \
+    --clean data/clean/sample-50k.jsonl --report data/clean/sample-50k.report.json \
+    --output reports/phase1-sample.md
 ```
+
+Sources, licences and measured results are in [DATA_CARD.md](DATA_CARD.md), with the
+sample analysis in [reports/phase1-sample.md](reports/phase1-sample.md).
 
 Order of the pipeline: normalise (NFKC, strip invisible characters) → quality filter →
 redact emails, phone numbers and IPs → exact dedup (sha256) → near dedup (MinHash, 128

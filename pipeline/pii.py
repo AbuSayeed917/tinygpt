@@ -8,9 +8,15 @@ from types import MappingProxyType
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
 _IPV4_OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 _IPV4 = re.compile(rf"\b{_IPV4_OCTET}(?:\.{_IPV4_OCTET}){{3}}\b")
-# Needs at least 8 digits in groups, so years ("2019-2020") and short numbers survive.
+# Two shapes only, chosen after sampling FineWeb-Edu matches: bare digit runs
+# were mostly ISBNs, PubMed IDs and page ranges, not phone numbers.
+#   international: "+44 20 7946 0958", "+60126725888"
+#   grouped:       "(701) 328-2666", "919-848-4229" (separators, last group 4 digits)
 _PHONE = re.compile(
-    r"(?<![\w.])(?:\+\d{1,3}[\s.-]?)?\(?\d{2,5}\)?[\s.-]?\d{3,4}[\s.-]?\d{3,4}(?![\w])"
+    r"(?<![\w.])(?:"
+    r"\+\d{1,3}[\s.-]?\d[\d\s.-]{6,14}\d"
+    r"|\(?\d{2,5}\)?[\s.-]\d{3,4}[\s.-]\d{4}"
+    r")(?![\w])"
 )
 
 # Order matters: an IPv4 address also looks like a dotted phone number.
