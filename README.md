@@ -1,40 +1,34 @@
-# tinygpt — build an LLM from scratch, then evolve it
+# tinygpt
 
-Each lesson is a folder that builds on the previous one. Every lesson runs on a
-MacBook (M-series GPU via PyTorch "mps").
+A small decoder-only language model that I build and train from scratch, then serve
+as the assistant on [masayeed.co.uk](https://www.masayeed.co.uk). It covers the whole
+LLM lifecycle using free tiers only: Google Colab for training, Railway for serving and
+Supabase for storage.
 
-| # | Lesson | What you learn | Maps to real LLMs |
-|---|--------|----------------|-------------------|
-| 01 | **Char-level GPT** (done) | tokens, embeddings, attention, residuals, cross-entropy, AdamW, sampling | The 2018-2019 GPT-1/GPT-2 architecture |
-| 02 | **Experiments** | break the model on purpose: no mask, no positions, 1 vs 8 layers, temperature | Why every part exists |
-| 03 | **BPE tokenizer** | write byte-pair encoding yourself | GPT/Claude tokenizers |
-| 04 | **Modern architecture** | RMSNorm, RoPE, SwiGLU, GQA, FlashAttention, KV cache | Llama 3 / DeepSeek / Qwen style |
-| 05 | **Training like a lab** | warmup + cosine LR, gradient clipping, mixed precision, scaling laws | How pretraining runs are tuned |
-| 06 | **Mixture of Experts** | router + experts, load balancing | DeepSeek-V3, Mixtral, (reportedly) frontier models |
-| 07 | **SFT: make it a chatbot** | chat template, special tokens, loss masking | Instruction tuning |
-| 08 | **Preference tuning** | DPO from chosen/rejected pairs | RLHF / DPO |
-| 09 | **Reasoning RL** | GRPO with a verifiable reward (arithmetic) | "Thinking" models |
-| 10 | **Agent loop** | your model calls a calculator tool in a loop | Agents / tool use |
+| Phase | Stage | Status |
+|---|---|---|
+| 1 | **Data curation:** normalisation, Gopher-style quality filtering, PII redaction, exact + MinHash/LSH near-dedup, data card | in progress |
+| 2 | **Tokenizer:** byte-level BPE written from scratch | planned |
+| 3 | **Model:** ~20M-param decoder (RMSNorm, RoPE, SwiGLU, tied embeddings, KV cache) | planned |
+| 4 | **Pretraining:** Colab T4, mixed precision, warmup + cosine LR, resumable checkpoints | planned |
+| 5 | **Supervised fine-tuning:** chat template, assistant-only loss masking | planned |
+| 6 | **Evaluation:** bits-per-byte, held-out Q&A, red-team suite, model card | planned |
+| 7 | **Serving:** safetensors export, NumPy inference engine, FastAPI + SSE on Railway | planned |
+| 8 | **Storage:** Supabase with row-level security, rate limits, 30-day log retention | planned |
+| 9 | **Chat widget** on the portfolio site | planned |
 
-## Lesson 01 quickstart
+`lesson01/` is where this project started: a character-level GPT trained on Shakespeare.
+
+## Phase 1: cleaning the data
 
 ```bash
-cd lesson01
-python3 tokenizer.py          # see text -> numbers -> text
-python3 train.py              # ~5-10 min, saves checkpoint.pt
-python3 sample.py --prompt "ROMEO:" --temperature 0.8
+python3 -m venv .venv && .venv/bin/pip install -r requirements/dev.txt
+.venv/bin/python -m pytest
+.venv/bin/python -m pipeline.clean --input data/raw/shard.jsonl \
+    --output data/clean/shard.jsonl --report data/clean/shard.report.json
 ```
 
-## Reading what training prints
-
-- **Starting loss ≈ ln(vocab_size)** (ln 65 ≈ 4.17): the model is guessing uniformly at random.
-- **~2.5**: it has learned letter frequencies and common pairs.
-- **~1.5**: it has learned words, line breaks, speaker names.
-- **train falling, val rising** = overfitting (memorising, not learning).
-
-## Files in lesson01
-
-- `tokenizer.py` — text <-> ids
-- `model.py` — the GPT (attention, MLP, blocks, generate)
-- `train.py` — the training loop
-- `sample.py` — generate text from the checkpoint
+Order of the pipeline: normalise (NFKC, strip invisible characters) → quality filter →
+redact emails, phone numbers and IPs → exact dedup (sha256) → near dedup (MinHash, 128
+permutations, 16 LSH bands, Jaccard ≥ 0.8). The report counts every rejection rule, so
+each filter's effect can be measured.
