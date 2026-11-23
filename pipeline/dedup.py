@@ -75,46 +75,59 @@ def estimate_jaccard(signature_a: np.ndarray, signature_b: np.ndarray) -> float:
     return float(np.mean(signature_a == signature_b))
 
 
+class NearDuplicateIndex:
+    """Remembers kept signatures and answers "is this a near-duplicate of one of them?".
+
+    Locality-sensitive hashing: each signature is cut into `bands`; documents
+    sharing any whole band become candidates, and only candidates are compared.
+    It holds state by design: dedup needs memory of everything kept so far.
+    """
+
+    def __init__(self, num_permutations: int = 128, threshold: float = 0.8, bands: int = 16):
+        if num_permutations % bands != 0:
+            raise ValueError("num_permutations must be divisible by bands")
+        if not 0.0 < threshold <= 1.0:
+            raise ValueError("threshold must be in (0, 1]")
+        self._threshold = threshold
+        self._bands = bands
+        self._rows_per_band = num_permutations // bands
+        self._band_buckets: list[dict[bytes, list[int]]] = [{} for _ in range(bands)]
+        self._kept_signatures: list[np.ndarray] = []
+
+    def _band_keys(self, signature: np.ndarray) -> list[bytes]:
+        rows = self._rows_per_band
+        return [signature[band * rows : (band + 1) * rows].tobytes() for band in range(self._bands)]
+
+    def add_unless_duplicate(self, signature: np.ndarray) -> bool:
+        """True if `signature` is a near-duplicate; otherwise stores it and returns False."""
+        band_keys = self._band_keys(signature)
+        candidate_ids = {
+            kept_id
+            for band, key in enumerate(band_keys)
+            for kept_id in self._band_buckets[band].get(key, ())
+        }
+        is_duplicate = any(
+            estimate_jaccard(signature, self._kept_signatures[kept_id]) >= self._threshold
+            for kept_id in candidate_ids
+        )
+        if is_duplicate:
+            return True
+
+        new_id = len(self._kept_signatures)
+        self._kept_signatures.append(signature)
+        for band, key in enumerate(band_keys):
+            self._band_buckets[band].setdefault(key, []).append(new_id)
+        return False
+
+
 def drop_near_duplicates(
     texts: Iterable[str],
     hasher: MinHasher,
     threshold: float = 0.8,
     bands: int = 16,
 ) -> Iterator[str]:
-    """Keeps the first document of every near-duplicate cluster, streaming.
-
-    Locality-sensitive hashing: the signature is cut into `bands`; documents
-    sharing any whole band become candidates, and only candidates are compared.
-    """
-    if hasher.num_permutations % bands != 0:
-        raise ValueError("num_permutations must be divisible by bands")
-    if not 0.0 < threshold <= 1.0:
-        raise ValueError("threshold must be in (0, 1]")
-
-    rows_per_band = hasher.num_permutations // bands
-    band_buckets: list[dict[bytes, list[int]]] = [{} for _ in range(bands)]
-    kept_signatures: list[np.ndarray] = []
-
+    """Keeps the first document of every near-duplicate cluster, streaming."""
+    index = NearDuplicateIndex(hasher.num_permutations, threshold, bands)
     for text in texts:
-        signature = hasher.signature(text)
-        band_keys = [
-            signature[band * rows_per_band : (band + 1) * rows_per_band].tobytes()
-            for band in range(bands)
-        ]
-        candidate_ids = {
-            kept_id
-            for band, key in enumerate(band_keys)
-            for kept_id in band_buckets[band].get(key, ())
-        }
-        is_duplicate = any(
-            estimate_jaccard(signature, kept_signatures[kept_id]) >= threshold
-            for kept_id in candidate_ids
-        )
-        if is_duplicate:
-            continue
-
-        new_id = len(kept_signatures)
-        kept_signatures.append(signature)
-        for band, key in enumerate(band_keys):
-            band_buckets[band].setdefault(key, []).append(new_id)
-        yield text
+        if not index.add_unless_duplicate(hasher.signature(text)):
+            yield text

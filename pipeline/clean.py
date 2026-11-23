@@ -7,25 +7,39 @@ Inputs ending in .parquet are streamed in batches; an output ending in .gz is gz
 
 Order: normalise -> quality filter -> PII redaction -> exact dedup -> near dedup.
 Dedup runs last so it compares the text the model will actually see.
+
+The per-document steps (and computing both fingerprints) run in a pool of worker
+processes. Dedup decisions need the memory of every document kept so far, so they
+stay in the main process, which consumes results in input order: the output is
+identical whatever the number of workers.
 """
 
 import argparse
 import gzip
 import json
+import multiprocessing
+import os
 import sys
 from collections import Counter
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass, field
+from itertools import batched
 from pathlib import Path
 from typing import TextIO
 
+import numpy as np
 import pyarrow.parquet as pq
 
-from pipeline.dedup import MinHasher, drop_exact_duplicates, drop_near_duplicates
+from pipeline.dedup import MinHasher, NearDuplicateIndex, exact_fingerprint
 from pipeline.normalize import normalize_text
 from pipeline.pii import redact_pii
 from pipeline.quality import assess_quality
 
 _PROGRESS_EVERY = 50_000
+# Pool.imap would read the whole input ahead of the workers; feeding fixed-size
+# batches bounds memory to one batch in flight.
+_BATCH_DOCUMENTS = 4_096
+_MINHASH_SEED = 0
 
 
 def iter_jsonl_texts(path: Path) -> Iterator[str]:
@@ -66,31 +80,83 @@ def _open_for_writing(path: Path) -> TextIO:
     return path.open("w", encoding="utf-8")
 
 
-def _count_through(texts: Iterable[str], stats: Counter[str], key: str) -> Iterator[str]:
-    for text in texts:
-        stats[key] += 1
-        yield text
+@dataclass(frozen=True)
+class PreparedDocument:
+    """Everything the main process needs to decide on one document."""
+
+    text: str | None
+    failed_rules: tuple[str, ...] = ()
+    redaction_counts: dict[str, int] = field(default_factory=dict)
+    fingerprint: str = ""
+    signature: np.ndarray | None = None
 
 
-def _filter_and_redact(texts: Iterable[str], stats: Counter[str]) -> Iterator[str]:
-    for raw_text in texts:
-        stats["input"] += 1
-        text = normalize_text(raw_text)
-        verdict = assess_quality(text)
-        if not verdict.is_kept:
-            stats["rejected_quality"] += 1
-            stats.update(f"rule:{rule}" for rule in verdict.failed_rules)
-            continue
-        redaction = redact_pii(text)
-        stats.update({f"redacted:{kind}": n for kind, n in redaction.counts.items() if n})
-        yield redaction.text
+def prepare_document(raw_text: str, hasher: MinHasher) -> PreparedDocument:
+    text = normalize_text(raw_text)
+    verdict = assess_quality(text)
+    if not verdict.is_kept:
+        return PreparedDocument(text=None, failed_rules=verdict.failed_rules)
+    redaction = redact_pii(text)
+    return PreparedDocument(
+        text=redaction.text,
+        redaction_counts={kind: n for kind, n in redaction.counts.items() if n},
+        fingerprint=exact_fingerprint(redaction.text),
+        signature=hasher.signature(redaction.text),
+    )
 
 
-def clean_documents(texts: Iterable[str], hasher: MinHasher, stats: Counter[str]) -> Iterator[str]:
+_worker_hasher: MinHasher | None = None
+
+
+def _init_worker() -> None:
+    global _worker_hasher
+    _worker_hasher = MinHasher(seed=_MINHASH_SEED)
+
+
+def _prepare_in_worker(raw_text: str) -> PreparedDocument:
+    if _worker_hasher is None:
+        raise RuntimeError("Worker was started without _init_worker")
+    return prepare_document(raw_text, _worker_hasher)
+
+
+def _prepare_all(texts: Iterable[str], workers: int) -> Iterator[PreparedDocument]:
+    if workers == 1:
+        hasher = MinHasher(seed=_MINHASH_SEED)
+        yield from (prepare_document(text, hasher) for text in texts)
+        return
+
+    context = multiprocessing.get_context("spawn")
+    with context.Pool(workers, initializer=_init_worker) as pool:
+        for batch in batched(texts, _BATCH_DOCUMENTS):
+            chunk_size = max(1, len(batch) // (workers * 4))
+            yield from pool.map(_prepare_in_worker, batch, chunksize=chunk_size)
+
+
+def clean_documents(texts: Iterable[str], stats: Counter[str], workers: int = 1) -> Iterator[str]:
     """Streams cleaned documents; `stats` is filled in as the stream is consumed."""
-    passed_quality = _count_through(_filter_and_redact(texts, stats), stats, "passed_quality")
-    unique_exact = _count_through(drop_exact_duplicates(passed_quality), stats, "unique_exact")
-    yield from _count_through(drop_near_duplicates(unique_exact, hasher), stats, "output")
+    if workers < 1:
+        raise ValueError("workers must be at least 1")
+
+    seen_fingerprints: set[str] = set()
+    near_duplicates = NearDuplicateIndex()
+    for document in _prepare_all(texts, workers):
+        stats["input"] += 1
+        if document.text is None or document.signature is None:
+            stats["rejected_quality"] += 1
+            stats.update(f"rule:{rule}" for rule in document.failed_rules)
+            continue
+        stats["passed_quality"] += 1
+        stats.update({f"redacted:{kind}": n for kind, n in document.redaction_counts.items()})
+
+        if document.fingerprint in seen_fingerprints:
+            continue
+        seen_fingerprints.add(document.fingerprint)
+        stats["unique_exact"] += 1
+
+        if near_duplicates.add_unless_duplicate(document.signature):
+            continue
+        stats["output"] += 1
+        yield document.text
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -98,6 +164,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--input", type=Path, nargs="+", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=max(1, (os.cpu_count() or 2) - 1),
+        help="worker processes (default: all cores but one)",
+    )
     return parser.parse_args(argv)
 
 
@@ -114,7 +186,7 @@ def main(argv: list[str]) -> None:
     # that a later step would mistake for a finished one.
     partial_output = args.output.with_name(args.output.name + ".partial")
     with _open_for_writing(partial_output) as handle:
-        for text in clean_documents(all_texts, MinHasher(), stats):
+        for text in clean_documents(all_texts, stats, args.workers):
             handle.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
             if stats["output"] % _PROGRESS_EVERY == 0:
                 print(f"{stats['input']:,} read, {stats['output']:,} kept", flush=True)

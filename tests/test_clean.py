@@ -7,7 +7,6 @@ import pyarrow.parquet as pq
 import pytest
 
 from pipeline.clean import clean_documents, iter_jsonl_texts, iter_parquet_texts, main
-from pipeline.dedup import MinHasher
 
 
 def test_clean_documents_filters_redacts_and_dedups(good_paragraph):
@@ -17,7 +16,7 @@ def test_clean_documents_filters_redacts_and_dedups(good_paragraph):
     stats: Counter[str] = Counter()
 
     # Act
-    output = list(clean_documents(texts, MinHasher(), stats))
+    output = list(clean_documents(texts, stats))
 
     # Assert
     assert len(output) == 1
@@ -26,6 +25,27 @@ def test_clean_documents_filters_redacts_and_dedups(good_paragraph):
     assert stats["rejected_quality"] == 1
     assert stats["unique_exact"] == 2
     assert stats["output"] == 1
+
+
+def test_parallel_cleaning_matches_serial_cleaning(good_paragraph):
+    # Arrange: a mix of keepers, junk, exact and near duplicates, in a fixed order
+    variants = [f"{good_paragraph} Note number {i} about topic {i * 7}." for i in range(30)]
+    texts = variants + ["too short"] * 5 + variants[:10] + [good_paragraph, good_paragraph]
+    serial_stats: Counter[str] = Counter()
+    parallel_stats: Counter[str] = Counter()
+
+    # Act
+    serial = list(clean_documents(texts, serial_stats, workers=1))
+    parallel = list(clean_documents(texts, parallel_stats, workers=3))
+
+    # Assert
+    assert parallel == serial
+    assert parallel_stats == serial_stats
+
+
+def test_clean_documents_rejects_zero_workers():
+    with pytest.raises(ValueError, match="workers"):
+        list(clean_documents(["x"], Counter(), workers=0))
 
 
 def test_iter_jsonl_texts_fails_fast_with_line_number(tmp_path):
