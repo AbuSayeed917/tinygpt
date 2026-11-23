@@ -10,7 +10,7 @@ Supabase for storage.
 | 1 | **Data curation:** normalisation, Gopher-style quality filtering, PII redaction, exact + MinHash/LSH near-dedup, data card | done |
 | 2 | **Tokenizer:** byte-level BPE written from scratch, 8,192 tokens, 3.92 bytes/token on held-out text | done |
 | 3 | **Model:** 17.3M-param decoder (RMSNorm, RoPE, SwiGLU, tied embeddings, KV cache); corpus encoded to 880M tokens | done |
-| 4 | **Pretraining:** Colab T4, mixed precision, warmup + cosine LR, resumable checkpoints | planned |
+| 4 | **Pretraining:** Colab T4, mixed precision, warmup + cosine LR, resumable checkpoints | ready to run |
 | 5 | **Supervised fine-tuning:** chat template, assistant-only loss masking | planned |
 | 6 | **Evaluation:** bits-per-byte, held-out Q&A, red-team suite, model card | planned |
 | 7 | **Serving:** safetensors export, NumPy inference engine, FastAPI + SSE on Railway | planned |
@@ -76,3 +76,21 @@ memorise one batch.
 This writes `train.bin` (880.4M tokens) and `val.bin` (4.3M tokens, every 200th document)
 as uint16, ready for memory-mapped training. See
 [reports/tokens-meta.json](reports/tokens-meta.json).
+
+## Phase 4: pretraining
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AbuSayeed917/tinygpt/blob/main/notebooks/pretrain.ipynb)
+
+`train/pretrain.py` runs 5,400 steps of 65,536 tokens (≈354M tokens, about 20 per parameter).
+It uses AdamW (β 0.9/0.95, weight decay 0.1 on matrices only), 200 warmup steps then cosine
+decay from 1e-3 to 1e-4, gradient clipping at 1.0, and fp16 autocast with loss scaling on a
+T4 (bf16 on Ampere and newer). It logs validation loss and bits per byte to `log.csv`.
+
+Checkpoints hold the model, optimiser, loss scaler and the batch sampler's random state.
+A test shows that 4 steps, stop, resume to 6 gives bit-for-bit the same weights as 6 steps
+straight. Checkpoints load with `weights_only=True`, so opening one can't run code.
+
+```bash
+.venv/bin/python -m train.pretrain --data-dir data/tokens --ckpt-dir checkpoints/smoke \
+    --max-steps 60 --warmup-steps 10 --eval-every 20 --batch-size 16 --grad-accum-steps 1
+```
