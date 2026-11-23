@@ -1,23 +1,31 @@
-"""Run the full cleaning pipeline over JSONL files with a "text" field.
+"""Run the full cleaning pipeline over Parquet or JSONL files with a "text" field.
 
-    python -m pipeline.clean --input data/raw/shard_000.jsonl \
-        --output data/clean/shard_000.jsonl --report data/clean/shard_000.report.json
+    python -m pipeline.clean --input data/raw/fineweb-edu-000_00000.parquet \
+        --output data/clean/fineweb-edu-000.jsonl.gz --report reports/fineweb-edu-000.json
+
+Inputs ending in .parquet are streamed in batches; an output ending in .gz is gzipped.
 
 Order: normalise -> quality filter -> PII redaction -> exact dedup -> near dedup.
 Dedup runs last so it compares the text the model will actually see.
 """
 
 import argparse
+import gzip
 import json
 import sys
 from collections import Counter
 from collections.abc import Iterable, Iterator
 from pathlib import Path
+from typing import TextIO
+
+import pyarrow.parquet as pq
 
 from pipeline.dedup import MinHasher, drop_exact_duplicates, drop_near_duplicates
 from pipeline.normalize import normalize_text
 from pipeline.pii import redact_pii
 from pipeline.quality import assess_quality
+
+_PROGRESS_EVERY = 50_000
 
 
 def iter_jsonl_texts(path: Path) -> Iterator[str]:
@@ -33,6 +41,29 @@ def iter_jsonl_texts(path: Path) -> Iterator[str]:
             if not isinstance(text, str):
                 raise ValueError(f"{path}:{line_number}: record has no string 'text' field")
             yield text
+
+
+def iter_parquet_texts(path: Path) -> Iterator[str]:
+    parquet = pq.ParquetFile(path)
+    if "text" not in parquet.schema_arrow.names:
+        raise ValueError(f"{path} has no 'text' column")
+    for batch in parquet.iter_batches(columns=["text"], batch_size=1024):
+        for text in batch.column(0).to_pylist():
+            if not isinstance(text, str):
+                raise ValueError(f"{path}: found a non-string 'text' value")
+            yield text
+
+
+def iter_texts(path: Path) -> Iterator[str]:
+    if path.suffix == ".parquet":
+        return iter_parquet_texts(path)
+    return iter_jsonl_texts(path)
+
+
+def _open_for_writing(path: Path) -> TextIO:
+    if path.name.endswith(".gz.partial"):
+        return gzip.open(path, "wt", encoding="utf-8")
+    return path.open("w", encoding="utf-8")
 
 
 def _count_through(texts: Iterable[str], stats: Counter[str], key: str) -> Iterator[str]:
@@ -77,14 +108,16 @@ def main(argv: list[str]) -> None:
         raise FileNotFoundError(f"Input files not found: {', '.join(missing)}")
 
     stats: Counter[str] = Counter()
-    all_texts = (text for path in args.input for text in iter_jsonl_texts(path))
+    all_texts = (text for path in args.input for text in iter_texts(path))
     args.output.parent.mkdir(parents=True, exist_ok=True)
     # Write to a temp file and rename, so a crash never leaves a half-written shard
     # that a later step would mistake for a finished one.
-    partial_output = args.output.with_suffix(args.output.suffix + ".partial")
-    with partial_output.open("w", encoding="utf-8") as handle:
+    partial_output = args.output.with_name(args.output.name + ".partial")
+    with _open_for_writing(partial_output) as handle:
         for text in clean_documents(all_texts, MinHasher(), stats):
             handle.write(json.dumps({"text": text}, ensure_ascii=False) + "\n")
+            if stats["output"] % _PROGRESS_EVERY == 0:
+                print(f"{stats['input']:,} read, {stats['output']:,} kept", flush=True)
     partial_output.replace(args.output)
 
     args.report.parent.mkdir(parents=True, exist_ok=True)

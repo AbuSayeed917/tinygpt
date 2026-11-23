@@ -65,7 +65,8 @@ class MinHasher:
         )
         # (num_shingles, 1) against (num_permutations,) -> one row per shingle.
         permuted = (hashed_shingles[:, None] * self._multipliers + self._offsets) % _MERSENNE_PRIME
-        return (permuted & _MAX_HASH_32).min(axis=0)
+        # Values are masked to 32 bits, so uint32 halves memory on large shards.
+        return (permuted & _MAX_HASH_32).min(axis=0).astype(np.uint32)
 
 
 def estimate_jaccard(signature_a: np.ndarray, signature_b: np.ndarray) -> float:
