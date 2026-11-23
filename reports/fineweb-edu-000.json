@@ -1,0 +1,19 @@
+{
+  "input": 726000,
+  "output": 719265,
+  "passed_quality": 721604,
+  "redacted:email": 21244,
+  "redacted:ipv4": 6106,
+  "redacted:phone": 29888,
+  "rejected_quality": 4396,
+  "rule:bullet_lines": 1182,
+  "rule:duplicate_lines": 4,
+  "rule:ellipsis_lines": 2021,
+  "rule:mean_word_length": 13,
+  "rule:non_alphabetic_words": 821,
+  "rule:repeated_bigram": 37,
+  "rule:symbol_to_word_ratio": 12,
+  "rule:too_few_stop_words": 6,
+  "rule:too_few_words": 341,
+  "unique_exact": 720092
+}

@@ -27,6 +27,29 @@ that is then published.
 5. **Near dedup:** MinHash (5-word shingles, 128 permutations), LSH with 16 bands,
    dropped at an estimated Jaccard of 0.8 or more.
 
+## Measured on the full shard (726,000 documents)
+
+Counts: [`reports/fineweb-edu-000.json`](reports/fineweb-edu-000.json). Output:
+`data/clean/fineweb-edu-000.jsonl.gz` (1.2 GB, not committed).
+
+| Step | Documents | Removed |
+|---|---|---|
+| Input | 726,000 | |
+| Passed quality filter | 721,604 | 4,396 (0.61%) |
+| Unique after exact dedup | 720,092 | 1,512 (0.21%) |
+| **Kept after near dedup** | **719,265** | 827 (0.11%) |
+
+- **Quality rejections by rule:** `ellipsis_lines` 2,021, `bullet_lines` 1,182,
+  `non_alphabetic_words` 821, `too_few_words` 341, `repeated_bigram` 37,
+  `mean_word_length` 13, `symbol_to_word_ratio` 12, `too_few_stop_words` 6,
+  `duplicate_lines` 4. One document can fail several rules.
+- **Redactions:** 21,244 emails, 6,106 IPs, 29,888 phone numbers.
+- **Run:** 10 min 25 s with 9 worker processes on an Apple M-series Mac with 10 cores
+  (2,802 CPU-seconds, ≈1,160 documents per second). The main process peaked at 2.9 GB,
+  mostly the near-duplicate index.
+- **Parallel matches serial:** with 8 workers the 50k sample's output and report are
+  byte-identical to the single-process run.
+
 ## Measured on a 50k-document sample
 
 Full report: [`reports/phase1-sample.md`](reports/phase1-sample.md). The sample is spread
@@ -41,8 +64,7 @@ evenly across the shard's row groups.
 - **Median document:** 2,912 characters (≈624 GPT-2 tokens).
 - **Most common sources:** Wikipedia, reference.com, Britannica, eNotes, and science news
   sites.
-- **Cleaning speed:** ≈440 documents per second on one CPU core (Apple M-series), so about
-  27 minutes for the full shard.
+- **Cleaning speed:** 113 s on one core, or 31 s with 8 worker processes (3.6× faster).
 
 ## Known limitations
 
