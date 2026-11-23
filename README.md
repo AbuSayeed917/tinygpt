@@ -7,8 +7,8 @@ Supabase for storage.
 
 | Phase | Stage | Status |
 |---|---|---|
-| 1 | **Data curation:** normalisation, Gopher-style quality filtering, PII redaction, exact + MinHash/LSH near-dedup, data card | in progress |
-| 2 | **Tokenizer:** byte-level BPE written from scratch | planned |
+| 1 | **Data curation:** normalisation, Gopher-style quality filtering, PII redaction, exact + MinHash/LSH near-dedup, data card | done |
+| 2 | **Tokenizer:** byte-level BPE written from scratch, 8,192 tokens, 3.92 bytes/token on held-out text | done |
 | 3 | **Model:** ~20M-param decoder (RMSNorm, RoPE, SwiGLU, tied embeddings, KV cache) | planned |
 | 4 | **Pretraining:** Colab T4, mixed precision, warmup + cosine LR, resumable checkpoints | planned |
 | 5 | **Supervised fine-tuning:** chat template, assistant-only loss masking | planned |
@@ -42,3 +42,19 @@ Order of the pipeline: normalise (NFKC, strip invisible characters) → quality 
 redact emails, phone numbers and IPs → exact dedup (sha256) → near dedup (MinHash, 128
 permutations, 16 LSH bands, Jaccard ≥ 0.8). The report counts every rejection rule, so
 each filter's effect can be measured.
+
+## Phase 2: the tokenizer
+
+```bash
+.venv/bin/python -m bpe.train --input data/clean/fineweb-edu-000.jsonl.gz \
+    --documents 100000 --vocab-size 8192 --output bpe/tinygpt-bpe-8k.json
+.venv/bin/python -m bpe.evaluate --tokenizer bpe/tinygpt-bpe-8k.json \
+    --clean data/clean/fineweb-edu-000.jsonl.gz --raw-dir data/raw --output reports/tokenizer-8k.md
+```
+
+Byte-level BPE with a GPT-2-style pre-tokenizer, trained in 54 s on 100k documents
+(95.7M pre-tokens). Training updates pair counts incrementally and uses a heap with lazy
+deletion; a test checks it learns exactly the same merges as textbook BPE. Results are in
+[reports/tokenizer-8k.md](reports/tokenizer-8k.md), and the input format is in
+[docs/chat_template.md](docs/chat_template.md). Plain `encode()` can never produce the
+role tokens, so users cannot spoof `<|system|>` or `<|assistant|>`.
